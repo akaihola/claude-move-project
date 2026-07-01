@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 CLAUDE_DIR="$HOME/.claude"
 PROJECTS_DIR="$CLAUDE_DIR/projects"
 HISTORY_FILE="$CLAUDE_DIR/history.jsonl"
@@ -147,10 +147,84 @@ What gets migrated:
 EOF
 }
 
+# Convert a non-negative integer to base-36 (0-9a-z), matching JS Number.toString(36).
+_to_base36() {
+    local n="$1"
+    local digits="0123456789abcdefghijklmnopqrstuvwxyz"
+    local out=""
+    if (( n == 0 )); then
+        echo "0"
+        return
+    fi
+    while (( n > 0 )); do
+        out="${digits:$(( n % 36 )):1}$out"
+        n=$(( n / 36 ))
+    done
+    echo "$out"
+}
+
+# Reproduce Claude's path hash for over-long encoded names. Claude uses a
+# Java-style 31-multiplier hashCode over the path's UTF-16 code units, then
+# Math.abs(hash).toString(36):
+#   jCe(e){let t=0;for(...)t=(t<<5)-t+e.charCodeAt(n)|0;return t}
+#   fNu(e){return Math.abs(jCe(e)).toString(36)}
+# We read UTF-16BE code units via iconv (faithful for all BMP characters);
+# if iconv is unavailable we fall back to byte values, which is correct for
+# ASCII paths (the only realistic case for names this long).
+_claude_path_hash() {
+    local str="$1" hash=0 unit hibyte=0 first=1 b bytes
+    bytes=$(printf '%s' "$str" | iconv -f UTF-8 -t UTF-16BE 2>/dev/null | od -An -v -tu1 2>/dev/null) || bytes=""
+    if [[ -n "$bytes" ]]; then
+        # Pair big-endian bytes into 16-bit code units (endianness-independent).
+        for b in $bytes; do
+            if [[ $first -eq 1 ]]; then
+                hibyte=$b
+                first=0
+            else
+                unit=$(( hibyte * 256 + b ))
+                hash=$(( (hash * 31 + unit) & 0xFFFFFFFF ))
+                first=1
+            fi
+        done
+    else
+        local i c
+        for (( i=0; i<${#str}; i++ )); do
+            c=$(LC_ALL=C printf '%d' "'${str:i:1}" 2>/dev/null)
+            hash=$(( (hash * 31 + c) & 0xFFFFFFFF ))
+        done
+    fi
+    # Interpret the 32-bit result as signed, then take the absolute value.
+    local abs
+    if (( hash >= 0x80000000 )); then
+        abs=$(( 0x100000000 - hash ))
+    else
+        abs=$hash
+    fi
+    _to_base36 "$abs"
+}
+
 # Convert path to Claude's encoded format: /path/to/dir -> -path-to-dir
+# Claude replaces EVERY non-alphanumeric character with '-', not just '/'.
+# So spaces, underscores, dots, etc. all become '-' as well. Examples:
+#   /home/seanl/sage_projects      -> -home-seanl-sage-projects
+#   /Users/me/WebHID snooper       -> -Users-me-WebHID-snooper
+#   /Users/me/PhD_Program/2026-1 X -> -Users-me-PhD-Program-2026-1-X
+# Additionally, Claude caps the folder name at 200 characters: longer names
+# are truncated to the first 200 characters plus '-' and a base-36 hash of the
+# original path (see _claude_path_hash). Verified against Claude Code's
+# encoder ($E/fNu/jCe). The encoding is lossy (many chars collapse to '-');
+# history.jsonl remains the source of truth for the original path.
+# Note: astral (non-BMP, e.g. emoji) characters in a path are the one case
+# this does not reproduce byte-for-byte, since Claude counts them as two
+# UTF-16 code units. Such characters in a project path are vanishingly rare.
 encode_path() {
     local path="$1"
-    echo "${path//\//-}"
+    local enc="${path//[^a-zA-Z0-9]/-}"
+    if (( ${#enc} <= 200 )); then
+        echo "$enc"
+    else
+        echo "${enc:0:200}-$(_claude_path_hash "$path")"
+    fi
 }
 
 # Get absolute path (works on macOS and Linux)
