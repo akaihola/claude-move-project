@@ -969,6 +969,12 @@ test_encode_path_windows_deep_multi_segment() {
         "D--dev-example-some-deep-project"
 }
 
+test_encode_path_windows_spaces() {
+    PATH_ENCODING="windows"
+    assert_eq "$(encode_path 'D:/My Projects/cool app')" \
+        "D--My-Projects-cool-app"
+}
+
 test_encode_path_hyphen_collision_documented() {
     # Lossy encoding: different paths can produce the same encoded form.
     PATH_ENCODING="windows"
@@ -992,7 +998,7 @@ test_to_history_form_windows_byte_exact() {
     # Verify byte-for-byte that to_history_form produces 2 backslash bytes per separator.
     PATH_ENCODING="windows"
     local got_hex
-    got_hex=$(printf '%s' "$(to_history_form 'D:/projects/foo')" | xxd -p)
+    got_hex=$(printf '%s' "$(to_history_form 'D:/projects/foo')" | od -An -tx1 | tr -d ' \n')
     # Expected: D:\\projects\\foo as raw bytes — 5c5c per separator
     assert_eq "$got_hex" "443a5c5c70726f6a656374735c5c666f6f"
 }
@@ -1010,7 +1016,7 @@ test_from_history_form_windows() {
 test_from_history_form_windows_byte_exact() {
     PATH_ENCODING="windows"
     local got_hex
-    got_hex=$(printf '%s' "$(from_history_form 'D:\\projects\\foo')" | xxd -p)
+    got_hex=$(printf '%s' "$(from_history_form 'D:\\projects\\foo')" | od -An -tx1 | tr -d ' \n')
     # Expected: D:/projects/foo as raw bytes — 2f per separator
     assert_eq "$got_hex" "443a2f70726f6a656374732f666f6f"
 }
@@ -1325,6 +1331,7 @@ main() {
         test_encode_path_windows_backslash
         test_encode_path_windows_lowercase_drive
         test_encode_path_windows_deep_multi_segment
+        test_encode_path_windows_spaces
         test_encode_path_hyphen_collision_documented
         test_to_history_form_posix_identity
         test_to_history_form_windows

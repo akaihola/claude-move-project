@@ -159,9 +159,9 @@ encode_path() {
             drive=$(echo "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')
             path="${drive}:/${BASH_REMATCH[2]}"
         fi
-        # Claude on Windows encodes : and \ to -, then / to -
-        path="${path//:/-}"
-        path="${path//\\/-}"
+        # Claude replaces every non-alphanumeric path character with '-'.
+        echo "${path//[^a-zA-Z0-9]/-}"
+        return
     fi
     echo "${path//\//-}"
 }
@@ -1976,7 +1976,7 @@ execute_fix_explicit() {
         log_success "Updated $entry_count history entries"
     fi
 
-    # Rewrite path references inside per-session JSONL files 
+    # Rewrite path references inside per-session JSONL files
     if [[ -d "$PROJECTS_DIR/$new_encoded" ]]; then
         log_info "Rewriting paths in session transcripts..."
         rewrite_paths_in_session_jsonls "$PROJECTS_DIR/$new_encoded" "$old_path" "$new_path"
