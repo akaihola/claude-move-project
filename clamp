@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 PROJECTS_DIR="$CLAUDE_DIR/projects"
 HISTORY_FILE="$CLAUDE_DIR/history.jsonl"
@@ -149,7 +149,54 @@ What gets migrated:
 EOF
 }
 
-# Convert path to Claude's encoded format.
+# Convert a non-negative integer to base-36 (0-9a-z), matching JS Number.toString(36).
+_to_base36() {
+    local n="$1"
+    local digits="0123456789abcdefghijklmnopqrstuvwxyz"
+    local out=""
+    if (( n == 0 )); then
+        echo "0"
+        return
+    fi
+    while (( n > 0 )); do
+        out="${digits:$(( n % 36 )):1}$out"
+        n=$(( n / 36 ))
+    done
+    echo "$out"
+}
+
+# Reproduce Claude's path hash for over-long encoded names.
+_claude_path_hash() {
+    local str="$1" hash=0 unit hibyte=0 first=1 b bytes
+    bytes=$(printf '%s' "$str" | iconv -f UTF-8 -t UTF-16BE 2>/dev/null | od -An -v -tu1 2>/dev/null) || bytes=""
+    if [[ -n "$bytes" ]]; then
+        for b in $bytes; do
+            if [[ $first -eq 1 ]]; then
+                hibyte=$b
+                first=0
+            else
+                unit=$(( hibyte * 256 + b ))
+                hash=$(( (hash * 31 + unit) & 0xFFFFFFFF ))
+                first=1
+            fi
+        done
+    else
+        local i c
+        for (( i=0; i<${#str}; i++ )); do
+            c=$(LC_ALL=C printf '%d' "'${str:i:1}" 2>/dev/null)
+            hash=$(( (hash * 31 + c) & 0xFFFFFFFF ))
+        done
+    fi
+    local abs
+    if (( hash >= 0x80000000 )); then
+        abs=$(( 0x100000000 - hash ))
+    else
+        abs=$hash
+    fi
+    _to_base36 "$abs"
+}
+
+# Convert a path to Claude's encoded project-directory format.
 encode_path() {
     local path="$1"
     if [[ "$PATH_ENCODING" == "windows" ]]; then
@@ -159,11 +206,13 @@ encode_path() {
             drive=$(echo "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')
             path="${drive}:/${BASH_REMATCH[2]}"
         fi
-        # Claude replaces every non-alphanumeric path character with '-'.
-        echo "${path//[^a-zA-Z0-9]/-}"
-        return
     fi
-    echo "${path//\//-}"
+    local enc="${path//[^a-zA-Z0-9]/-}"
+    if (( ${#enc} <= 200 )); then
+        echo "$enc"
+    else
+        echo "${enc:0:200}-$(_claude_path_hash "$path")"
+    fi
 }
 
 # Convert a filesystem-form path to history.jsonl form.
