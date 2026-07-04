@@ -87,7 +87,8 @@ create_mock_project() {
     # Create encoded history folder
     local abs_path
     abs_path=$(cd "$project_path" && pwd)
-    local encoded="${abs_path//\//-}"
+    local encoded
+    encoded=$(encode_path "$abs_path")
 
     mkdir -p "$MOCK_CLAUDE_DIR/projects/$encoded"
     echo '{"type":"session","data":"test"}' > "$MOCK_CLAUDE_DIR/projects/$encoded/session1.jsonl"
@@ -249,8 +250,9 @@ test_basic_move() {
     assert_exists "$dest_abs/.claude/settings.json" "Settings should be moved" || return 1
 
     # Verify history folder renamed
-    local old_encoded="${source_abs//\//-}"
-    local new_encoded="${dest_abs//\//-}"
+    local old_encoded new_encoded
+    old_encoded=$(encode_path "$source_abs")
+    new_encoded=$(encode_path "$dest_abs")
     assert_not_exists "$MOCK_CLAUDE_DIR/projects/$old_encoded" "Old history folder should be gone" || return 1
     assert_dir_exists "$MOCK_CLAUDE_DIR/projects/$new_encoded" "New history folder should exist" || return 1
 
@@ -696,8 +698,9 @@ test_fix_explicit() {
     assert_not_contains "$MOCK_CLAUDE_DIR/history.jsonl" "$old_abs" "History should not contain old path" || return 1
 
     # Verify session folder was renamed
-    local old_encoded="${old_abs//\//-}"
-    local new_encoded="${new_abs//\//-}"
+    local old_encoded new_encoded
+    old_encoded=$(encode_path "$old_abs")
+    new_encoded=$(encode_path "$new_abs")
     assert_not_exists "$MOCK_CLAUDE_DIR/projects/$old_encoded" "Old session folder should be gone" || return 1
     assert_dir_exists "$MOCK_CLAUDE_DIR/projects/$new_encoded" "New session folder should exist" || return 1
 }
@@ -761,7 +764,8 @@ test_prune_orphaned() {
     # Real project session folder should still exist
     local real_abs
     real_abs=$(cd "$TEST_DIR/real-project" && pwd)
-    local real_encoded="${real_abs//\//-}"
+    local real_encoded
+    real_encoded=$(encode_path "$real_abs")
     assert_dir_exists "$MOCK_CLAUDE_DIR/projects/$real_encoded" "Real project session should remain" || return 1
 
     # Output should mention pruning
@@ -866,7 +870,8 @@ test_claude_config_dir_move() {
     mkdir -p "$source_abs/.claude"
     echo "# Test" > "$source_abs/README.md"
 
-    local encoded="${source_abs//\//-}"
+    local encoded
+    encoded=$(encode_path "$source_abs")
     mkdir -p "$custom_config/projects/$encoded"
     echo "{\"type\":\"session\",\"cwd\":\"$source_abs\"}" > "$custom_config/projects/$encoded/session1.jsonl"
     echo "{\"project\":\"$source_abs\",\"session\":\"session1\"}" >> "$custom_config/history.jsonl"
@@ -877,7 +882,8 @@ test_claude_config_dir_move() {
     assert_not_exists "$source_abs" "Source should be gone" || return 1
     assert_dir_exists "$dest_abs" "Destination should exist" || return 1
 
-    local new_encoded="${dest_abs//\//-}"
+    local new_encoded
+    new_encoded=$(encode_path "$dest_abs")
     assert_not_exists "$custom_config/projects/$encoded" "Old session folder should be gone" || return 1
     assert_dir_exists "$custom_config/projects/$new_encoded" "New session folder should exist in custom config" || return 1
     assert_not_contains "$custom_config/history.jsonl" "$source_abs" "Old path should not be in history" || return 1
@@ -917,7 +923,8 @@ test_claude_config_dir_fix() {
     mkdir -p "$old_abs/.claude"
     echo "# Test" > "$old_abs/README.md"
 
-    local old_encoded="${old_abs//\//-}"
+    local old_encoded
+    old_encoded=$(encode_path "$old_abs")
     mkdir -p "$custom_config/projects/$old_encoded"
     echo "{\"type\":\"session\",\"cwd\":\"$old_abs\"}" > "$custom_config/projects/$old_encoded/session1.jsonl"
     echo "{\"project\":\"$old_abs\",\"session\":\"s1\"}" >> "$custom_config/history.jsonl"
@@ -926,7 +933,8 @@ test_claude_config_dir_fix() {
     local new_abs="$TEST_DIR/fix-new"
     CLAUDE_CONFIG_DIR="$custom_config" "$SCRIPT" --fix --from "$old_abs" --to "$new_abs" -f
 
-    local new_encoded="${new_abs//\//-}"
+    local new_encoded
+    new_encoded=$(encode_path "$new_abs")
     assert_not_exists "$custom_config/projects/$old_encoded" "Old session folder should be gone" || return 1
     assert_dir_exists "$custom_config/projects/$new_encoded" "New session folder should exist" || return 1
     assert_contains "$custom_config/history.jsonl" "$new_abs" "History should have new path" || return 1
@@ -973,6 +981,22 @@ test_encode_path_windows_spaces() {
     PATH_ENCODING="windows"
     assert_eq "$(encode_path 'D:/My Projects/cool app')" \
         "D--My-Projects-cool-app"
+}
+
+test_encode_path_special_characters() {
+    PATH_ENCODING="posix"
+    assert_eq "$(encode_path '/Users/me/PhD_Program/2026-1 X')" \
+        "-Users-me-PhD-Program-2026-1-X"
+}
+
+test_encode_path_long_name_hash() {
+    PATH_ENCODING="posix"
+    local path encoded
+    path="/tmp/$(printf 'a%.0s' {1..220})"
+    encoded=$(encode_path "$path")
+    assert_eq "${#encoded}" "207"
+    assert_eq "${encoded: -7}" "-vp21ax"
+    assert_eq "$(_claude_path_hash "$path")" "vp21ax"
 }
 
 test_encode_path_hyphen_collision_documented() {
@@ -1332,6 +1356,8 @@ main() {
         test_encode_path_windows_lowercase_drive
         test_encode_path_windows_deep_multi_segment
         test_encode_path_windows_spaces
+        test_encode_path_special_characters
+        test_encode_path_long_name_hash
         test_encode_path_hyphen_collision_documented
         test_to_history_form_posix_identity
         test_to_history_form_windows
